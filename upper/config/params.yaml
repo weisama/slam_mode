@@ -4,7 +4,7 @@ lidar_name: N10
 # 定义 base_link -> laser_link 的固定 TF 变换，单位cm和度
 x: 0
 y: 0
-z: 10
+z: 0
 roll: 0
 pitch: 0
 yaw: 0

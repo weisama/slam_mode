@@ -5,79 +5,187 @@
 #include "tf2_msgs/msg/tf_message.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
+#include <fcntl.h>
+#include <termios.h>
+#include <unistd.h>
+#include <cmath>
+
 class PoseSendNode : public rclcpp::Node
 {
 public:
     PoseSendNode() : Node("pose_send_node")
     {
-        // ✅ 检查是否已声明 use_sim_time（避免重复声明异常）
+        // 声明 use_sim_time
         if (!this->has_parameter("use_sim_time"))
-        {
             this->declare_parameter("use_sim_time", false);
-        }
 
         bool use_sim_time = this->get_parameter("use_sim_time").as_bool();
         if (use_sim_time)
-        {
             RCLCPP_INFO(this->get_logger(), "Using simulated time (use_sim_time=true)");
-        }
 
+        // 发布到 MAVROS
         pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
             "/mavros/vision_pose/pose", 10);
 
-        // 增加 TF 缓存时长以避免 extrapolation
+        // TF 缓冲区
         tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock(), tf2::durationFromSec(10.0));
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-        // 订阅 /tf 和 /tf_static，用来触发 lookupTransform
+        // 订阅 TF
         tf_sub_ = this->create_subscription<tf2_msgs::msg::TFMessage>(
             "/tf", 50,
             std::bind(&PoseSendNode::tf_callback, this, std::placeholders::_1));
+
         tf_static_sub_ = this->create_subscription<tf2_msgs::msg::TFMessage>(
             "/tf_static", 10,
             std::bind(&PoseSendNode::tf_callback, this, std::placeholders::_1));
 
-        RCLCPP_INFO(this->get_logger(), "pose_send_node started, waiting for TFs (map→odom→base_link)...");
+        RCLCPP_INFO(this->get_logger(), "pose_send_node started, waiting for TFs (map → base_link)...");
+
+        open_serial_port();
     }
 
 private:
+    //============================================================================
+    // 串口初始化
+    //============================================================================
+    void open_serial_port()
+    {
+        serial_fd_ = open("/dev/ttyS4", O_RDWR | O_NOCTTY | O_NONBLOCK);
+        if (serial_fd_ < 0)
+        {
+            RCLCPP_ERROR(this->get_logger(), "Failed to open /dev/ttyS4");
+            return;
+        }
+
+        struct termios tty;
+        tcgetattr(serial_fd_, &tty);
+
+        cfsetospeed(&tty, B115200);
+        cfsetispeed(&tty, B115200);
+
+        tty.c_cflag &= ~PARENB;      // No parity
+        tty.c_cflag &= ~CSTOPB;      // 1 stop bit
+        tty.c_cflag &= ~CSIZE;
+        tty.c_cflag |= CS8;          // 8 data bits
+        tty.c_cflag &= ~CRTSCTS;     // No HW flow control
+        tty.c_cflag |= CREAD | CLOCAL;
+
+        tty.c_lflag &= ~ICANON;
+        tty.c_lflag &= ~ECHO;
+        tty.c_lflag &= ~ECHOE;
+        tty.c_lflag &= ~ECHONL;
+        tty.c_lflag &= ~ISIG;
+
+        tty.c_iflag &= ~(IXON | IXOFF | IXANY);
+        tty.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL);
+
+        tty.c_oflag &= ~OPOST;
+        tty.c_oflag &= ~ONLCR;
+
+        tty.c_cc[VTIME] = 1;
+        tty.c_cc[VMIN] = 0;
+
+        tcsetattr(serial_fd_, TCSANOW, &tty);
+
+        RCLCPP_INFO(this->get_logger(), "Serial /dev/ttyS4 opened (115200 8N1)");
+    }
+
+    //============================================================================
+    // 串口发送函数 (按协议封包)
+    //============================================================================
+    void send_serial(int16_t x, int16_t y, int16_t z, int16_t yaw)
+    {
+        if (serial_fd_ < 0)
+            return;
+
+        uint8_t buf[10];
+        buf[0] = 0xAA;
+
+        buf[1] = (x >> 8) & 0xFF;
+        buf[2] = (x)&0xFF;
+
+        buf[3] = (y >> 8) & 0xFF;
+        buf[4] = (y)&0xFF;
+
+        buf[5] = (z >> 8) & 0xFF;
+        buf[6] = (z)&0xFF;
+
+        buf[7] = (yaw >> 8) & 0xFF;
+        buf[8] = (yaw)&0xFF;
+
+        buf[9] = 0x0A;
+
+        write(serial_fd_, buf, 10);
+    }
+
+    //============================================================================
+    // TF 回调
+    //============================================================================
     void tf_callback(const tf2_msgs::msg::TFMessage::SharedPtr msg)
     {
-        (void)msg; // 不直接用 TF，只触发 TF 缓存更新
+        (void)msg;
 
         try
         {
-            // 使用最新可用 TF，等待 0.1 秒以避免时间不同步问题
-            geometry_msgs::msg::TransformStamped transform_stamped =
+            auto transform_stamped =
                 tf_buffer_->lookupTransform("map", "base_link", rclcpp::Time(0), tf2::durationFromSec(0.1));
 
             geometry_msgs::msg::PoseStamped pose_msg;
-            pose_msg.header.stamp = transform_stamped.header.stamp;
+            pose_msg.header = transform_stamped.header;
             pose_msg.header.frame_id = "map";
             pose_msg.pose.position.x = transform_stamped.transform.translation.x;
             pose_msg.pose.position.y = transform_stamped.transform.translation.y;
             pose_msg.pose.position.z = transform_stamped.transform.translation.z;
             pose_msg.pose.orientation = transform_stamped.transform.rotation;
 
+            // 发布给 MAVROS
             pose_pub_->publish(pose_msg);
 
-            RCLCPP_DEBUG(this->get_logger(), "Published pose: x=%.2f y=%.2f",
-                         pose_msg.pose.position.x, pose_msg.pose.position.y);
+            //===========================================
+            // 单位转换：m→cm, rad→deg
+            //===========================================
+            int16_t x_cm = static_cast<int16_t>(pose_msg.pose.position.x * 100.0);
+            int16_t y_cm = static_cast<int16_t>(pose_msg.pose.position.y * 100.0);
+            int16_t z_cm = static_cast<int16_t>(pose_msg.pose.position.z * 100.0);
+
+            tf2::Quaternion q(
+                pose_msg.pose.orientation.x,
+                pose_msg.pose.orientation.y,
+                pose_msg.pose.orientation.z,
+                pose_msg.pose.orientation.w);
+
+            double roll, pitch, yaw_rad;
+            tf2::Matrix3x3(q).getRPY(roll, pitch, yaw_rad);
+
+            int16_t yaw_deg = static_cast<int16_t>(yaw_rad * 180.0 / M_PI);
+
+            // 发送串口
+            send_serial(x_cm, y_cm, z_cm, yaw_deg);
         }
         catch (tf2::TransformException &ex)
         {
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                                 "Waiting for TF map->base_link: %s", ex.what());
+                                 "Waiting for TF map→base_link: %s", ex.what());
         }
     }
+
+    //============================================================================
+    // 成员变量
+    //============================================================================
+    int serial_fd_ = -1;
 
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
     rclcpp::Subscription<tf2_msgs::msg::TFMessage>::SharedPtr tf_sub_;
     rclcpp::Subscription<tf2_msgs::msg::TFMessage>::SharedPtr tf_static_sub_;
+
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 };
 
+//============================================================================
+// main
+//============================================================================
 int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
@@ -86,3 +194,4 @@ int main(int argc, char **argv)
     rclcpp::shutdown();
     return 0;
 }
+
