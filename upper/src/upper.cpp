@@ -13,10 +13,11 @@
 #include <cerrno>
 #include <sys/socket.h>
 #include <arpa/inet.h>
-#include <nlohmann/json.hpp>
-#include <tinyxml2.h>
 #include <filesystem>
 #include <fstream>
+
+#include <yaml-cpp/yaml.h>
+#include <nlohmann/json.hpp>
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
@@ -25,7 +26,6 @@
 
 using json = nlohmann::json;
 using namespace std::chrono_literals;
-using namespace tinyxml2;
 namespace fs = std::filesystem;
 
 class TcpSender : public rclcpp::Node
@@ -33,7 +33,6 @@ class TcpSender : public rclcpp::Node
 public:
     TcpSender() : Node("tcp_sender"), listen_sock_(-1)
     {
-        // ---- 参数声明 ----
         this->declare_parameter<std::string>("tcp_ip", "0.0.0.0");
         this->declare_parameter<int>("tcp_port", 6666);
 
@@ -42,7 +41,6 @@ public:
 
         startTcpServer();
 
-        // ---- 订阅话题 ----
         tf_sub_ = this->create_subscription<tf2_msgs::msg::TFMessage>(
             "/tf", 10, std::bind(&TcpSender::tfCallback, this, std::placeholders::_1));
         scan_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
@@ -50,12 +48,9 @@ public:
         map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
             "/map", 1, std::bind(&TcpSender::mapCallback, this, std::placeholders::_1));
 
-        // ---- TCP 连接 & 接收检查 ----
         tcp_accept_timer_ = this->create_wall_timer(200ms, std::bind(&TcpSender::acceptPendingClients, this));
         tcp_recv_timer_ = this->create_wall_timer(100ms, std::bind(&TcpSender::checkTcpRecv, this));
-
-        // ---- 速率统计 ----
-        rate_timer_ = this->create_wall_timer(1s, std::bind(&TcpSender::logRates, this));
+        rate_timer_ = this->create_wall_timer(10s, std::bind(&TcpSender::logRates, this));
     }
 
     ~TcpSender()
@@ -71,7 +66,7 @@ private:
         listen_sock_ = socket(AF_INET, SOCK_STREAM, 0);
         if (listen_sock_ < 0)
         {
-            RCLCPP_ERROR(this->get_logger(), "Failed to create socket: %s", strerror(errno));
+            RCLCPP_ERROR(this->get_logger(), "socket创建失败: %s", strerror(errno));
             return;
         }
 
@@ -85,13 +80,13 @@ private:
 
         if (bind(listen_sock_, (struct sockaddr *)&addr, sizeof(addr)) < 0)
         {
-            RCLCPP_ERROR(this->get_logger(), "Bind failed: %s", strerror(errno));
+            RCLCPP_ERROR(this->get_logger(), "端口被暂用，Bind failed: %s", strerror(errno));
             return;
         }
 
         listen(listen_sock_, 5);
         fcntl(listen_sock_, F_SETFL, O_NONBLOCK);
-        RCLCPP_INFO(this->get_logger(), "TCP server listening on %s:%d", tcp_ip_.c_str(), tcp_port_);
+        RCLCPP_INFO(this->get_logger(), "TCP 正在监听 %s:%d", tcp_ip_.c_str(), tcp_port_);
     }
 
     void acceptPendingClients()
@@ -103,7 +98,7 @@ private:
 
         fcntl(client_fd, F_SETFL, O_NONBLOCK);
         clients_.insert(client_fd);
-        RCLCPP_INFO(this->get_logger(), "New TCP client connected, fd=%d", client_fd);
+        RCLCPP_INFO(this->get_logger(), "新的TCP上位机连接成功, fd=%d", client_fd);
     }
 
     // ======== TCP 数据接收与解析 ========
@@ -136,7 +131,7 @@ private:
                 {
                     uint8_t reply[4] = {0xAA, 0x00, 0x01, 0x0A};
                     send(*it, reply, sizeof(reply), 0);
-                    RCLCPP_INFO(this->get_logger(), "Recv test cmd, echo back AA 00 01 0A");
+                    RCLCPP_INFO(this->get_logger(), "收到测试指令，回发 AA 00 01 0A");
                 }
             }
 
@@ -147,7 +142,7 @@ private:
                     buf[i + 2] == 0x02 && buf[i + 3] == 0x0A)
                 {
                     handleMapSaveCommand();
-                    RCLCPP_INFO(this->get_logger(), "Recv save map command AA 00 02 0A");
+                    RCLCPP_INFO(this->get_logger(), "收到保存地图指令 AA 00 02 0A");
                 }
             }
 
@@ -158,7 +153,7 @@ private:
                     buf[i + 2] == 0x03 && buf[i + 3] == 0x0A)
                 {
                     handleSendParamsCommand();
-                    RCLCPP_INFO(this->get_logger(), "Recv send params command AA 00 03 0A");
+                    RCLCPP_INFO(this->get_logger(), "收到读取参数指令 AA 00 03 0A");
                 }
             }
 
@@ -170,7 +165,7 @@ private:
                     uint8_t param_id = buf[i + 2];
                     uint16_t value = (buf[i + 3] << 8) | buf[i + 4];
                     handleParamCommand(param_id, value);
-                    RCLCPP_INFO(this->get_logger(), "Recv param cmd: id=%d value=%d", param_id, value);
+                    RCLCPP_INFO(this->get_logger(), "收到参数修改: id=%d value=%d", param_id, value);
                 }
             }
 
@@ -181,63 +176,93 @@ private:
     // ======== 发送参数到上位机 ========
     void handleSendParamsCommand()
     {
-        std::string file_path = std::string(getenv("HOME")) + "/slam_ws/src/upper/config/param.xml";
-        XMLDocument doc;
-        if (doc.LoadFile(file_path.c_str()) != XML_SUCCESS)
-        {
-            RCLCPP_ERROR(this->get_logger(), "Failed to open %s", file_path.c_str());
+        std::string file_path = std::string(getenv("HOME")) + "/slam_ws/src/upper/config/params.yaml";
+        YAML::Node config;
+        try {
+            config = YAML::LoadFile(file_path);
+        } catch (const std::exception &e) {
+            RCLCPP_ERROR(this->get_logger(), "无法打开 %s: %s", file_path.c_str(), e.what());
             return;
         }
 
-        XMLElement *root = doc.RootElement();
-        if (!root)
-        {
-            RCLCPP_ERROR(this->get_logger(), "Invalid XML root");
-            return;
-        }
+        std::string lidar_name = config["lidar_name"] ? config["lidar_name"].as<std::string>() : "N10";
+        float x = config["x"] ? config["x"].as<float>() : 0.0f;
+        float y = config["y"] ? config["y"].as<float>() : 0.0f;
+        float z = config["z"] ? config["z"].as<float>() : 0.0f;
+        float roll = config["roll"] ? config["roll"].as<float>() : 0.0f;
+        float pitch = config["pitch"] ? config["pitch"].as<float>() : 0.0f;
+        float yaw = config["yaw"] ? config["yaw"].as<float>() : 0.0f;
+        std::string mode = config["mode"] ? config["mode"].as<std::string>() : "mapping";
 
-        auto getVal = [&](const char *name, const std::string &default_val = "0") -> std::string
-        {
-            XMLElement *elem = root->FirstChildElement(name);
-            return elem ? (elem->GetText() ? elem->GetText() : default_val) : default_val;
-        };
+        sendParamToClients(0x00, (lidar_name == "N10") ? 0 : 1);
+        sendParamToClients(0x01, static_cast<uint16_t>(x));
+        sendParamToClients(0x02, static_cast<uint16_t>(y));
+        sendParamToClients(0x03, static_cast<uint16_t>(z));
+        sendParamToClients(0x04, static_cast<uint16_t>(roll));
+        sendParamToClients(0x05, static_cast<uint16_t>(pitch));
+        sendParamToClients(0x06, static_cast<uint16_t>(yaw));
+        sendParamToClients(0x10, (mode == "mapping") ? 0 : 1);
 
-        // 读取所有参数值
-        std::string lidar_name = getVal("lidar_name", "N10");
-        float x = std::stof(getVal("x", "0"));
-        float y = std::stof(getVal("y", "0"));
-        float z = std::stof(getVal("z", "0"));
-        float roll = std::stof(getVal("roll", "0"));
-        float pitch = std::stof(getVal("pitch", "0"));
-        float yaw = std::stof(getVal("yaw", "0"));
-        std::string mode = getVal("mode", "mapping");
-
-        // 发送所有参数到客户端
-        sendParamToClients(0x00, (lidar_name == "N10") ? 0 : 1);  // 雷达类型
-        sendParamToClients(0x01, static_cast<uint16_t>(x));        // X坐标
-        sendParamToClients(0x02, static_cast<uint16_t>(y));        // Y坐标  
-        sendParamToClients(0x03, static_cast<uint16_t>(z));        // Z坐标
-        sendParamToClients(0x04, static_cast<uint16_t>(roll));     // 横滚角
-        sendParamToClients(0x05, static_cast<uint16_t>(pitch));    // 俯仰角
-        sendParamToClients(0x06, static_cast<uint16_t>(yaw));      // 偏航角
-        sendParamToClients(0x10, (mode == "mapping") ? 0 : 1);     // 工作模式
-
-        RCLCPP_INFO(this->get_logger(), "All parameters sent to clients");
+        RCLCPP_INFO(this->get_logger(), "参数已从 YAML 文件读取并发送");
     }
 
     void sendParamToClients(uint8_t param_id, uint16_t value)
     {
-        std::vector<uint8_t> packet;
-        packet.push_back(0xAA);
-        packet.push_back(0x10);  // 参数命令标识
-        packet.push_back(param_id);
-        packet.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));  // 高字节
-        packet.push_back(static_cast<uint8_t>(value & 0xFF));         // 低字节
-        packet.push_back(0x0A);  // 结束符
-
+        std::vector<uint8_t> packet = {0xAA, 0x10, param_id,
+            static_cast<uint8_t>((value >> 8) & 0xFF),
+            static_cast<uint8_t>(value & 0xFF),
+            0x0A};
         sendPacket(packet);
-        
-        RCLCPP_DEBUG(this->get_logger(), "Sent param: id=0x%02X value=%d", param_id, value);
+    }
+
+    // ======== 修改 params.yaml ========
+    void handleParamCommand(uint8_t param_id, uint16_t value)
+    {
+        std::string file_path = std::string(getenv("HOME")) + "/slam_ws/src/upper/config/params.yaml";
+        YAML::Node config;
+        try {
+            config = YAML::LoadFile(file_path);
+        } catch (const std::exception &e) {
+            RCLCPP_ERROR(this->get_logger(), "无法打开 %s: %s", file_path.c_str(), e.what());
+            return;
+        }
+
+        switch (param_id)
+        {
+            case 0x00: config["lidar_name"] = (value == 0) ? "N10" : "N10_P"; break;
+            case 0x01: config["x"] = value; break;
+            case 0x02: config["y"] = value; break;
+            case 0x03: config["z"] = value; break;
+            case 0x04: config["roll"] = value; break;
+            case 0x05: config["pitch"] = value; break;
+            case 0x06: config["yaw"] = value; break;
+            case 0x10:
+                config["mode"] = (value == 0) ? "mapping" : "localization";
+                break;
+            default:
+                RCLCPP_WARN(this->get_logger(), "Unknown param id: %d", param_id);
+                return;
+        }
+
+        try {
+            std::ofstream fout(file_path);
+            fout << "# 雷达型号选择: N10, N10_P\n";
+            fout << "lidar_name: " << config["lidar_name"].as<std::string>() << "\n\n";
+            fout << "# 定义 base_link -> laser_link 的固定 TF 变换，单位cm和度\n";
+            fout << "x: " << config["x"].as<float>() << "\n";
+            fout << "y: " << config["y"].as<float>() << "\n";
+            fout << "z: " << config["z"].as<float>() << "\n";
+            fout << "roll: " << config["roll"].as<float>() << "\n";
+            fout << "pitch: " << config["pitch"].as<float>() << "\n";
+            fout << "yaw: " << config["yaw"].as<float>() << "\n\n";
+            fout << "# SLAM_TOOLBOX建图or定位模式，mapping/localization\n";
+            fout << "mode: " << config["mode"].as<std::string>() << "\n";
+            fout.close();
+
+            RCLCPP_INFO(this->get_logger(), "已更新并保存 %s", file_path.c_str());
+        } catch (const std::exception &e) {
+            RCLCPP_ERROR(this->get_logger(), "保存 YAML 文件失败: %s", e.what());
+        }
     }
 
     // ======== 保存地图为YAML和PGM格式 ========
@@ -245,7 +270,7 @@ private:
     {
         if (!last_map_)
         {
-            RCLCPP_WARN(this->get_logger(), "No map data received yet!");
+            RCLCPP_WARN(this->get_logger(), "没有/map话题数据");
             return;
         }
 
@@ -256,21 +281,10 @@ private:
         std::string yaml_path = dir_path + "my_map.yaml";
         std::string pgm_path = dir_path + "my_map.pgm";
 
-        // 保存PGM文件
-        if (!saveMapAsPGM(pgm_path))
-        {
-            RCLCPP_ERROR(this->get_logger(), "Failed to save PGM map");
+        if (!saveMapAsPGM(pgm_path) || !saveMapAsYAML(yaml_path, pgm_path))
             return;
-        }
 
-        // 保存YAML文件
-        if (!saveMapAsYAML(yaml_path, pgm_path))
-        {
-            RCLCPP_ERROR(this->get_logger(), "Failed to save YAML map");
-            return;
-        }
-
-        RCLCPP_INFO(this->get_logger(), "Map saved to %s and %s", yaml_path.c_str(), pgm_path.c_str());
+        RCLCPP_INFO(this->get_logger(), "Map 成功保存在 %s 和 %s", yaml_path.c_str(), pgm_path.c_str());
     }
 
     bool saveMapAsPGM(const std::string& file_path)
@@ -278,7 +292,7 @@ private:
         std::ofstream ofs(file_path, std::ios::binary);
         if (!ofs.is_open())
         {
-            RCLCPP_ERROR(this->get_logger(), "Failed to open PGM file: %s", file_path.c_str());
+            RCLCPP_ERROR(this->get_logger(), "无法打开 PGM 文件: %s", file_path.c_str());
             return false;
         }
 
@@ -286,40 +300,19 @@ private:
         int width = map->info.width;
         int height = map->info.height;
 
-        // 写入PGM头
         ofs << "P5\n" << width << " " << height << "\n255\n";
-
-        // 写入地图数据（转换为0-255范围）
         for (int y = 0; y < height; ++y)
         {
             for (int x = 0; x < width; ++x)
             {
                 int index = y * width + x;
                 int8_t value = map->data[index];
-                
-                // 转换规则：
-                // -1 (未知) -> 205
-                // 0-100 (占用) -> 0-254 (0=完全占用, 100=完全自由)
                 uint8_t pgm_value;
-                if (value == -1)
-                {
-                    pgm_value = 205;  // 未知区域
-                }
-                else if (value < 0 || value > 100)
-                {
-                    pgm_value = 205;  // 无效值也当作未知
-                }
-                else
-                {
-                    // 将0-100转换为0-254，0表示占用，100表示自由
-                    pgm_value = static_cast<uint8_t>((100 - value) * 254 / 100);
-                }
-                
+                if (value == -1) pgm_value = 205;
+                else pgm_value = static_cast<uint8_t>((100 - value) * 254 / 100);
                 ofs << pgm_value;
             }
         }
-
-        ofs.close();
         return true;
     }
 
@@ -328,76 +321,22 @@ private:
         std::ofstream ofs(yaml_path);
         if (!ofs.is_open())
         {
-            RCLCPP_ERROR(this->get_logger(), "Failed to open YAML file: %s", yaml_path.c_str());
+            RCLCPP_ERROR(this->get_logger(), "无法打开 YAML 文件: %s", yaml_path.c_str());
             return false;
         }
 
         const auto& map = last_map_;
-        
-        // 只获取PGM文件名，不包含路径
-        std::string pgm_filename = "my_map.pgm";
-
-        // 写入YAML内容
-        ofs << "image: " << pgm_filename << "\n"
+        ofs << "image: my_map.pgm\n"
             << "resolution: " << map->info.resolution << "\n"
-            << "origin: [" << map->info.origin.position.x << ", " 
-                          << map->info.origin.position.y << ", " 
+            << "origin: [" << map->info.origin.position.x << ", "
+                          << map->info.origin.position.y << ", "
                           << map->info.origin.position.z << "]\n"
             << "negate: 0\n"
             << "occupied_thresh: 0.65\n"
             << "free_thresh: 0.196\n";
-
-        ofs.close();
         return true;
     }
 
-    // ======== 修改 param.xml ========
-    void handleParamCommand(uint8_t param_id, uint16_t value)
-    {
-        std::string file_path = std::string(getenv("HOME")) + "/slam_ws/src/upper/config/param.xml";
-        XMLDocument doc;
-        if (doc.LoadFile(file_path.c_str()) != XML_SUCCESS)
-        {
-            RCLCPP_ERROR(this->get_logger(), "Failed to open %s", file_path.c_str());
-            return;
-        }
-
-        XMLElement *root = doc.RootElement();
-        if (!root)
-        {
-            RCLCPP_ERROR(this->get_logger(), "Invalid XML root");
-            return;
-        }
-
-        auto setVal = [&](const char *name, const std::string &val)
-        {
-            XMLElement *elem = root->FirstChildElement(name);
-            if (elem)
-                elem->SetText(val.c_str());
-        };
-
-        switch (param_id)
-        {
-            case 0x00: if (value == 0) setVal("lidar_name", "N10"); else setVal("lidar_name", "N10_P"); break;
-            case 0x01: setVal("x", std::to_string(value)); break;
-            case 0x02: setVal("y", std::to_string(value)); break;
-            case 0x03: setVal("z", std::to_string(value)); break;
-            case 0x04: setVal("roll", std::to_string(value)); break;
-            case 0x05: setVal("pitch", std::to_string(value)); break;
-            case 0x06: setVal("yaw", std::to_string(value)); break;
-            case 0x10:
-                if (value == 0) setVal("mode", "mapping");
-                else if (value == 1) setVal("mode", "localization");
-                else RCLCPP_WARN(this->get_logger(), "Unknown mode value: %d", value);
-                break;
-            default:
-                RCLCPP_WARN(this->get_logger(), "Unknown param id: %d", param_id);
-                return;
-        }
-
-        doc.SaveFile(file_path.c_str());
-        RCLCPP_INFO(this->get_logger(), "Updated %s successfully.", file_path.c_str());
-    }
 
     // ======== ROS2 回调 ========
     void tfCallback(const tf2_msgs::msg::TFMessage::SharedPtr msg)
@@ -501,37 +440,38 @@ private:
         }
     }
 
-    // ======== 日志统计 ========
     void logRates()
     {
-        RCLCPP_INFO(this->get_logger(),
-                    "Tx/Rx rates (bytes/sec): sent=%zu, recv=%zu, clients=%zu",
-                    bytes_sent_tcp_, bytes_recv_tcp_, clients_.size());
-        bytes_sent_tcp_ = 0;
-        bytes_recv_tcp_ = 0;
+        RCLCPP_INFO(this->get_logger(), "TCP发送累计字节: %lu, 接收累计字节: %lu",
+                    bytes_sent_tcp_, bytes_recv_tcp_);
     }
 
-private:
+    // ========== 成员变量 ==========
     std::string tcp_ip_;
     int tcp_port_;
     int listen_sock_;
     std::set<int> clients_;
-
-    rclcpp::Subscription<tf2_msgs::msg::TFMessage>::SharedPtr tf_sub_;
-    rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
-    rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
-    rclcpp::TimerBase::SharedPtr rate_timer_, tcp_accept_timer_, tcp_recv_timer_;
+    std::mutex mtx_;
 
     size_t bytes_sent_tcp_ = 0;
     size_t bytes_recv_tcp_ = 0;
 
+    rclcpp::Subscription<tf2_msgs::msg::TFMessage>::SharedPtr tf_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
+    rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     nav_msgs::msg::OccupancyGrid::SharedPtr last_map_;
+
+    rclcpp::TimerBase::SharedPtr tcp_accept_timer_;
+    rclcpp::TimerBase::SharedPtr tcp_recv_timer_;
+    rclcpp::TimerBase::SharedPtr rate_timer_;
 };
 
 int main(int argc, char *argv[])
 {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<TcpSender>());
+    auto node = std::make_shared<TcpSender>();
+    rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;
 }
+
