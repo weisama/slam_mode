@@ -17,7 +17,7 @@ mode: mapping
 ### 上位机不可修改参数
 
 # 雷达数据发布的话题
-scan_topic: /scan_raw
+scan_topic: /scan
 
 # 雷达串口设备
 serial_port_: /dev/usb_robot
