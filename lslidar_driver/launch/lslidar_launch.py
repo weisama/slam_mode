@@ -7,10 +7,10 @@ from launch import LaunchDescription
 from launch_ros.actions import LifecycleNode
 
 def generate_launch_description():
-    # === 1. 获取参数文件路径 ===
-    user_ws = os.path.expanduser('~/slam_ws/src/upper/config')
-    param_file = os.path.join(user_ws, 'params.yaml')
-    
+    # === 1. 获取参数文件路径（相对位置） ===
+    upper_share_dir = get_package_share_directory('upper')
+    param_file = os.path.join(upper_share_dir, 'config', 'params.yaml')
+
     # 读取用户参数
     if os.path.exists(param_file):
         with open(param_file, 'r') as f:

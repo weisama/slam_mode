@@ -42,13 +42,7 @@ def generate_launch_description():
     # === 3. driver YAML 文件路径 ===
     driver_yaml = os.path.join(get_package_share_directory('lslidar_driver'), 'params', 'lsx10.yaml')
 
-    # === 4. 启动 TF broadcaster ===
-    tf_launch_file = os.path.join(get_package_share_directory('tf'), 'launch', 'tf_broadcaster.launch.py')
-    tf_broadcaster_node = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(tf_launch_file)
-    )
-    
-    # === 5. 启动 lslidar_driver LifecycleNode ===
+    # === 4. 启动 lslidar_driver LifecycleNode ===
     lslidar_driver_node = LifecycleNode(
         package='lslidar_driver',
         executable='lslidar_driver_node',
@@ -66,7 +60,7 @@ def generate_launch_description():
         ],
     )
 
-    # === 6. 启动 LidarFilter 节点 ===
+    # === 5. 启动 LidarFilter 节点 ===
     lidar_filter_node = Node(
         package='lidar_filter',
         executable='lidar_filter_node',
@@ -78,6 +72,11 @@ def generate_launch_description():
         }]
     )
 
+    # === 6. 启动 TF broadcaster ===
+    tf_launch_file = os.path.join(get_package_share_directory('tf'), 'launch', 'tf_broadcaster.launch.py')
+    tf_broadcaster_node = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(tf_launch_file)
+    )
 
     # === 7. 返回 LaunchDescription ===
     return LaunchDescription([
@@ -85,4 +84,3 @@ def generate_launch_description():
         lidar_filter_node,
         tf_broadcaster_node
     ])
-
