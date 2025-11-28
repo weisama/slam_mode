@@ -1,0 +1,82 @@
+slam_toolbox:
+  ros__parameters:
+    # 模式配置
+    mode: "mapping"
+    debug_mode: false
+    
+    # 话题配置
+    odom_frame: "odom"
+    base_frame: "base_link"
+    map_frame: "map"
+    scan_topic: "/scan"
+    
+    # 坐标变换设置
+    publish_tf: true
+    publish_map_tf: true
+
+    # 地图起始位姿
+    map_start_pose:
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+
+
+    # 地图参数
+    map_file_name: "karto_slam_map"
+    map_update_interval: 5.0
+    resolution: 0.05
+    
+    
+    # 扫描匹配参数
+    use_scan_matching: true
+    use_scan_barycenter: true
+    minimum_travel_distance: 0.5
+    minimum_travel_heading: 0.5
+    scan_buffer_size: 10
+    
+    # 扫描匹配器参数
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 10.0
+    loop_search_maximum_distance: 5.0
+    
+    # 协方差参数
+    odom_covariance: [0.1, 0.0, 0.0, 0.0, 0.0, 0.0,
+                      0.0, 0.1, 0.0, 0.0, 0.0, 0.0,
+                      0.0, 0.0, 0.1, 0.0, 0.0, 0.0,
+                      0.0, 0.0, 0.0, 0.1, 0.0, 0.0,
+                      0.0, 0.0, 0.0, 0.0, 0.1, 0.0,
+                      0.0, 0.0, 0.0, 0.0, 0.0, 0.1]
+    
+    # 优化参数
+    do_map_publishing: true
+    enable_interactive_mode: true
+    
+    # 雷达范围
+    min_range: 0.2
+    max_range: 20.0
+    
+    # 里程计参数
+    use_odom: true
+    use_imu: false
+    
+    # 地图保存参数
+    save_pose_rate: 0.5
+    save_scans: true
+    
+    # 性能参数
+    throttle_scans: 1
+    transform_timeout: 0.2
+    laser_scan_topic_queue_size: 100
+
+    
+    # 闭环检测参数
+    loop_closure_rate: 1.0
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+
+# 坐标变换配置
+transform_manager:
+  ros__parameters:
+    cache_time: 10.0
