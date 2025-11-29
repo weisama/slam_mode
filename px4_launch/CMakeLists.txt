@@ -9,10 +9,4 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
-# 安装 config/ 到 install/share/px4_launch/config/
-install(
-  DIRECTORY config
-  DESTINATION share/${PROJECT_NAME}
-)
-
 ament_package()

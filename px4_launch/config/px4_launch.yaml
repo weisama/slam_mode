@@ -1,7 +1,0 @@
-/mavros:
-  ros__parameters:
-    plugin_allowlist:
-      - imu
-      - vision_pose_estimate
-      - setpoint_raw
-    plugin_denylist: ['*']   # 先全部拒绝，再用allowlist放行
