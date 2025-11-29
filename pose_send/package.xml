@@ -1,11 +1,13 @@
 <?xml version="1.0"?>
-<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd"
+            schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>pose_send</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Send pose from TF to PX4 and UART</description>
+
   <maintainer email="33229176757@qq.com">cat</maintainer>
-  <license>TODO: License declaration</license>
+  <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
@@ -15,9 +17,6 @@
   <depend>tf2_ros</depend>
   <depend>tf2_msgs</depend>
   <depend>tf2_geometry_msgs</depend>
-
-  <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

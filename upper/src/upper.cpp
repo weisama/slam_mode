@@ -196,6 +196,8 @@ private:
         float pitch = config["pitch"] ? config["pitch"].as<float>() : 0.0f;
         float yaw = config["yaw"] ? config["yaw"].as<float>() : 0.0f;
         std::string mode = config["mode"] ? config["mode"].as<std::string>() : "mapping";
+        int px4_flag  = config["px4_flag"]  ? config["px4_flag"].as<int>()  : 0;
+        int uart_flag = config["uart_flag"] ? config["uart_flag"].as<int>() : 0;
 
         sendParamToClients(0x00, (lidar_name == "N10") ? 0 : 1);
         sendParamToClients(0x01, static_cast<uint16_t>(x));
@@ -205,7 +207,9 @@ private:
         sendParamToClients(0x05, static_cast<uint16_t>(pitch));
         sendParamToClients(0x06, static_cast<uint16_t>(yaw));
         sendParamToClients(0x10, (mode == "mapping") ? 0 : 1);
-
+        sendParamToClients(0x11, static_cast<uint16_t>(px4_flag));
+        sendParamToClients(0x12, static_cast<uint16_t>(uart_flag));
+        
         RCLCPP_INFO(this->get_logger(), "参数已从 YAML 文件读取并发送");
     }
 
@@ -242,6 +246,9 @@ private:
             case 0x05: cfg["pitch"]     = static_cast<int>(value); break;
             case 0x06: cfg["yaw"]       = static_cast<int>(value); break;
             case 0x10: cfg["mode"]      = (value == 0 ? "mapping" : "localization"); break;
+            case 0x11: cfg["px4_flag"]  = static_cast<int>(value); break;
+            case 0x12: cfg["uart_flag"] = static_cast<int>(value); break;
+
             default:
                 RCLCPP_WARN(get_logger(), "未知 param_id: %u", param_id);
                 return;
@@ -251,16 +258,21 @@ private:
         try {
             std::ofstream fout(file_path);
             fout << "# 雷达型号选择: N10, N10_P\n"
-                << "lidar_name: " << cfg["lidar_name"].as<std::string>() << "\n\n"
-                << "# 定义 base_link -> laser_link 的固定 TF 变换，单位cm和度\n"
-                << "x: "      << cfg["x"].as<int>()    << "\n"
-                << "y: "      << cfg["y"].as<int>()    << "\n"
-                << "z: "      << cfg["z"].as<int>()    << "\n"
-                << "roll: "   << cfg["roll"].as<int>() << "\n"
-                << "pitch: "  << cfg["pitch"].as<int>()<< "\n"
-                << "yaw: "    << cfg["yaw"].as<int>()  << "\n\n"
-                << "# SLAM_TOOLBOX建图or定位模式，mapping/localization\n"
-                << "mode: "   << cfg["mode"].as<std::string>() << "\n";
+                        << "lidar_name: " << cfg["lidar_name"].as<std::string>() << "\n\n"
+                        << "# 定义 base_link -> laser_link 的固定 TF 变换，单位cm和度\n"
+                        << "x: "      << cfg["x"].as<int>()    << "\n"
+                        << "y: "      << cfg["y"].as<int>()    << "\n"
+                        << "z: "      << cfg["z"].as<int>()    << "\n"
+                        << "roll: "   << cfg["roll"].as<int>() << "\n"
+                        << "pitch: "  << cfg["pitch"].as<int>()<< "\n"
+                        << "yaw: "    << cfg["yaw"].as<int>()  << "\n\n"
+                        << "# SLAM_TOOLBOX建图or定位模式，mapping/localization\n"
+                        << "mode: "   << cfg["mode"].as<std::string>() << "\n\n"
+                        << "# 是否使能飞控输出坐标\n"
+                        << "px4_flag: " << cfg["px4_flag"].as<int>() << "\n\n"
+                        << "# 是否使能串口输出坐标\n"
+                        << "uart_flag: " << cfg["uart_flag"].as<int>() << "\n";
+            
             RCLCPP_INFO(get_logger(), "已更新并保存 %s", file_path.c_str());
         } catch (const std::exception& e) {
             RCLCPP_ERROR(get_logger(), "保存 YAML 失败: %s", e.what());
@@ -477,4 +489,3 @@ int main(int argc, char *argv[])
     rclcpp::shutdown();
     return 0;
 }
-

@@ -15,6 +15,16 @@ class PoseSendNode : public rclcpp::Node
 public:
     PoseSendNode() : Node("pose_send_node")
     {
+        // 参数声明（默认都使能）
+        this->declare_parameter<int>("px4_flag", 1);
+        this->declare_parameter<int>("uart_flag", 1);
+
+        px4_flag_ = this->get_parameter("px4_flag").as_int();
+        uart_flag_ = this->get_parameter("uart_flag").as_int();
+
+        RCLCPP_INFO(this->get_logger(),
+                    "px4_flag=%d  uart_flag=%d", px4_flag_, uart_flag_);
+
         // 声明 use_sim_time
         if (!this->has_parameter("use_sim_time"))
             this->declare_parameter("use_sim_time", false);
@@ -23,11 +33,11 @@ public:
         if (use_sim_time)
             RCLCPP_INFO(this->get_logger(), "Using simulated time (use_sim_time=true)");
 
-        // 发布到 MAVROS
+        // 发布 MAVROS
         pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
             "/mavros/vision_pose/pose", 10);
 
-        // TF 缓冲区
+        // TF 缓冲
         tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock(), tf2::durationFromSec(10.0));
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
@@ -42,7 +52,9 @@ public:
 
         RCLCPP_INFO(this->get_logger(), "pose_send_node started, waiting for TFs (map → base_link)...");
 
-        open_serial_port();
+        // 串口打开（仅当需要）
+        if (uart_flag_ == 1)
+            open_serial_port();
     }
 
 private:
@@ -64,11 +76,11 @@ private:
         cfsetospeed(&tty, B115200);
         cfsetispeed(&tty, B115200);
 
-        tty.c_cflag &= ~PARENB;      // No parity
-        tty.c_cflag &= ~CSTOPB;      // 1 stop bit
+        tty.c_cflag &= ~PARENB;
+        tty.c_cflag &= ~CSTOPB;
         tty.c_cflag &= ~CSIZE;
-        tty.c_cflag |= CS8;          // 8 data bits
-        tty.c_cflag &= ~CRTSCTS;     // No HW flow control
+        tty.c_cflag |= CS8;
+        tty.c_cflag &= ~CRTSCTS;
         tty.c_cflag |= CREAD | CLOCAL;
 
         tty.c_lflag &= ~ICANON;
@@ -92,11 +104,11 @@ private:
     }
 
     //============================================================================
-    // 串口发送函数 (按协议封包)
+    // 串口发送函数
     //============================================================================
     void send_serial(int16_t x, int16_t y, int16_t z, int16_t yaw)
     {
-        if (serial_fd_ < 0)
+        if (serial_fd_ < 0 || uart_flag_ == 0)
             return;
 
         uint8_t buf[10];
@@ -139,12 +151,11 @@ private:
             pose_msg.pose.position.z = transform_stamped.transform.translation.z;
             pose_msg.pose.orientation = transform_stamped.transform.rotation;
 
-            // 发布给 MAVROS
-            pose_pub_->publish(pose_msg);
+            // MAVROS 输出（受 px4_flag 控制）
+            if (px4_flag_ == 1)
+                pose_pub_->publish(pose_msg);
 
-            //===========================================
-            // 单位转换：m→cm, rad→deg
-            //===========================================
+            // 单位转换 m → cm, rad → deg
             int16_t x_cm = static_cast<int16_t>(pose_msg.pose.position.x * 100.0);
             int16_t y_cm = static_cast<int16_t>(pose_msg.pose.position.y * 100.0);
             int16_t z_cm = static_cast<int16_t>(pose_msg.pose.position.z * 100.0);
@@ -160,7 +171,7 @@ private:
 
             int16_t yaw_deg = static_cast<int16_t>(yaw_rad * 180.0 / M_PI);
 
-            // 发送串口
+            // 串口输出（受 uart_flag 控制）
             send_serial(x_cm, y_cm, z_cm, yaw_deg);
         }
         catch (tf2::TransformException &ex)
@@ -174,6 +185,8 @@ private:
     // 成员变量
     //============================================================================
     int serial_fd_ = -1;
+    int px4_flag_ = 1;
+    int uart_flag_ = 1;
 
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
     rclcpp::Subscription<tf2_msgs::msg::TFMessage>::SharedPtr tf_sub_;
@@ -182,6 +195,7 @@ private:
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 };
+
 
 //============================================================================
 // main
@@ -194,4 +208,3 @@ int main(int argc, char **argv)
     rclcpp::shutdown();
     return 0;
 }
-

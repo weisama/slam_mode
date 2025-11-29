@@ -14,6 +14,12 @@ yaw: 0
 # SLAM_TOOLBOX建图or定位模式，mapping/localization
 mode: mapping
 
+# 是否使能飞控输出坐标
+px4_flag: 1
+
+# 是否使能串口输出坐标
+uart_flag: 1
+
 ### 上位机不可修改参数
 
 # 雷达驱动发布的话题

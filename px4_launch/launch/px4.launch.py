@@ -7,7 +7,7 @@ def generate_launch_description():
         Node(
             package='mavros',
             executable='mavros_node',
-            name='mavros',
+            # name='mavros',
             namespace='/mavros',
             output='screen',            # 仍想屏幕输出，但只打 WARN/ERROR
             arguments=[
